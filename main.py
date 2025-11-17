@@ -1,6 +1,8 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import List, Optional
 
 app = FastAPI()
 
@@ -12,13 +14,86 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+class FoodItem(BaseModel):
+    name: str = Field(..., description="Food name")
+    amount_g: float = Field(..., ge=0, description="Amount eaten in grams")
+    calories_per_100g: Optional[float] = Field(None, ge=0, description="Calories per 100g")
+    calories_per_serving: Optional[float] = Field(
+        None, ge=0, description="Calories per serving (if using serving size)"
+    )
+    serving_size_g: Optional[float] = Field(
+        None, ge=0, description="Serving size in grams corresponding to calories_per_serving"
+    )
+
+
+class CalculationRequest(BaseModel):
+    items: List[FoodItem]
+
+
+class ItemResult(BaseModel):
+    name: str
+    amount_g: float
+    calories: float
+    method: str
+    note: Optional[str] = None
+
+
+class CalculationResponse(BaseModel):
+    total_calories: float
+    items: List[ItemResult]
+
+
 @app.get("/")
 def read_root():
     return {"message": "Hello from FastAPI Backend!"}
 
+
 @app.get("/api/hello")
 def hello():
     return {"message": "Hello from the backend API!"}
+
+
+@app.post("/api/calculate", response_model=CalculationResponse)
+def calculate_calories(payload: CalculationRequest):
+    results: List[ItemResult] = []
+    total = 0.0
+
+    for item in payload.items:
+        calories = 0.0
+        method = "unknown"
+        note: Optional[str] = None
+
+        if item.calories_per_100g is not None:
+            calories = (item.amount_g * item.calories_per_100g) / 100.0
+            method = "per_100g"
+        elif (
+            item.calories_per_serving is not None
+            and item.serving_size_g is not None
+            and item.serving_size_g > 0
+        ):
+            servings = item.amount_g / item.serving_size_g
+            calories = servings * item.calories_per_serving
+            method = "per_serving"
+        else:
+            note = "Missing calorie data; counted as 0"
+            method = "insufficient_data"
+
+        calories = float(round(calories, 2))
+        total += calories
+
+        results.append(
+            ItemResult(
+                name=item.name,
+                amount_g=float(item.amount_g),
+                calories=calories,
+                method=method,
+                note=note,
+            )
+        )
+
+    return CalculationResponse(total_calories=float(round(total, 2)), items=results)
+
 
 @app.get("/test")
 def test_database():
